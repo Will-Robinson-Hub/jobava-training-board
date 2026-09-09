@@ -1,0 +1,53 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jobava Training Board v2</title><style>
+*{box-sizing:border-box}body{font-family:system-ui,Arial;margin:0;background:#f4f5f7;color:#17191d}.app{max-width:1120px;margin:auto;padding:20px}
+header h1{margin:0}.muted{color:#60656f}.layout{display:grid;grid-template-columns:minmax(0,650px) minmax(280px,1fr);gap:22px;align-items:start}
+#board{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));grid-template-rows:repeat(8,minmax(0,1fr));width:min(100%,calc(100vh - 190px));height:auto;aspect-ratio:1/1;border:4px solid #2d3035;border-radius:5px;overflow:hidden;margin:0 auto}
+.sq{position:relative;display:flex;align-items:center;justify-content:center;min-width:0;min-height:0;width:100%;height:100%;font-size:clamp(28px,min(7vw,9vh),68px);line-height:1;user-select:none;overflow:hidden}.light{background:#e8e8e8}.dark{background:#858585}
+.sel{box-shadow:inset 0 0 0 5px #e2bf32}.target:after{content:"";width:22%;height:22%;border-radius:50%;background:#3338;position:absolute}.wrong{box-shadow:inset 0 0 0 6px #b52828}.right{box-shadow:inset 0 0 0 6px #278842}
+.card{background:#fff;border:1px solid #ddd;border-radius:12px;padding:16px;margin-bottom:14px}.controls{display:flex;flex-wrap:wrap;gap:7px}
+button,select,input{font:inherit;padding:9px;border:1px solid #bbb;border-radius:7px;background:#fff}button{cursor:pointer}button:hover{background:#eee}select,input{width:100%}
+.status{font-weight:700;font-size:1.05rem}.ok{color:#16733a}.no{color:#a01d1d}.hidden{display:none}code{word-break:break-all;font-size:.82rem}
+.badge{display:inline-block;padding:3px 8px;border-radius:20px;background:#eee;font-size:.8rem}.lessonTitle{font-size:1.25rem;font-weight:750}
+@media(max-width:820px){.layout{grid-template-columns:1fr}#board{width:min(100%,calc(100vh - 150px));max-width:600px}.app{padding:10px}.sq{font-size:clamp(26px,min(10vw,9vh),60px)}}
+</style></head><body><div class="app"><header><h1>♟ Jobava London Training Board</h1><p class="muted">v2.2 — Coach-linked lesson, repertoire, and quiz board</p></header>
+<div class="layout"><section><div id="board"></div><p class="muted">Drag a piece or click the piece and then its destination.</p></section>
+<aside>
+<div class="card"><span class="badge" id="module"></span><div class="lessonTitle" id="title"></div><p id="prompt"></p><p class="status" id="status">Your move.</p>
+<div class="controls"><button id="hint">Hint</button><button id="answer">Show answer</button><button id="retry">Try again</button><button id="next">Next position</button><button id="flip">Flip</button></div>
+<p id="explain" class="muted"></p></div>
+<div class="card"><b>Load a position</b><input id="fenIn" placeholder="Paste FEN"><div class="controls"><button id="loadFen">Load FEN</button><button id="start">Starting position</button></div>
+<p><b>FEN</b><br><code id="fenOut"></code></p><p><b>Last move</b> <span id="last">—</span></p></div>
+</aside></div></div>
+<script>
+const U={K:'♔',Q:'♕',R:'♖',B:'♗',N:'♘',P:'♙',k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'};
+const LESSONS=[
+{id:'DNA-01',module:'Phase 1 · Jobava DNA',title:'The Nb5 Motif',fen:'rnbqkb1r/ppp2ppp/4pn2/3p4/3P1B2/2N5/PPP1PPPP/R2QKBNR w KQkq - 0 4',from:'c3',to:'b5',san:'Nb5',hint:'Look at Black’s c7-pawn. Which White piece can attack it immediately?',explain:'Nb5 creates immediate pressure on c7. This is a defining Jobava idea and can force Black into awkward defensive development.'},
+{id:'REP-05',module:'Phase 2 · Core Repertoire',title:'3...c5 — Newer Repertoire',fen:'rnbqkb1r/pp2pppp/5n2/2pp4/3P1B2/2N5/PPP1PPPP/R2QKBNR w KQkq - 0 4',from:'e2',to:'e3',san:'e3',hint:'The current working repertoire is calmer than the older 4.e4 line.',explain:'4.e3 is the newer working repertoire choice in our course build. The 4.e4 material remains useful as an alternative/history comparison.'},
+{id:'DNA-05',module:'Phase 1 · Jobava DNA',title:'Prepare h4-h5',fen:'rnbqkb1r/ppp1pp1p/5np1/3p4/3P1B2/2N5/PPP1PPPP/R2QKBNR w KQkq - 0 4',from:'e2',to:'e3',san:'e3',hint:'Develop the center first; the g6-pawn will later become a hook.',explain:'After e3 and ...Bg7, h4-h5 is a characteristic course attacking plan against the kingside fianchetto.'},
+{id:'REP-04',module:'Phase 2 · Core Repertoire',title:'...a6 Changes the Plan',fen:'rnbqkb1r/1pp1pppp/p4n2/3p4/3P1B2/2N5/PPP1PPPP/R2QKBNR w KQkq - 0 4',from:'e2',to:'e3',san:'e3',hint:'Nb5 has been prevented. Don’t force the old plan.',explain:'4.e3 develops naturally and lets White switch plans. In course structures with ...e6, h4 is an important newer attacking idea.'},
+{id:'MOVE-08',module:'Phase 3 · Move Orders',title:'2...Nc6 — Don’t Autopilot',fen:'r1bqkbnr/ppp1pppp/2n5/3p4/3P4/2N5/PPP1PPPP/R1BQKBNR w KQkq - 0 3',from:'e2',to:'e4',san:'e4',hint:'Nc3 supports a central pawn advance. Use it.',explain:'3.e4 is the course move. This is a key example of Jobava thinking: respond to the move order rather than automatically playing Bf4.'}
+];
+let idx=0,map={},selected=null,flipped=false,dragFrom=null,marks={};
+const files='abcdefgh';
+function parseFen(f){let m={},rows=f.split(' ')[0].split('/');rows.forEach((row,ri)=>{let fi=0;for(const c of row){if(/[1-8]/.test(c))fi+=+c;else{m[files[fi]+(8-ri)]=c;fi++}}});return m}
+function makeFen(m,turn='w'){let rows=[];for(let r=8;r>=1;r--){let row='',empty=0;for(const f of files){let p=m[f+r];if(p){if(empty){row+=empty;empty=0}row+=p}else empty++}if(empty)row+=empty;rows.push(row)}return rows.join('/')+' '+turn+' - - 0 1'}
+function squaresBetween(){return []}
+function render(){board.innerHTML='';let fs=flipped?'hgfedcba':'abcdefgh',rs=flipped?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];for(const r of rs)for(const f of fs){let s=f+r,d=document.createElement('div');d.className='sq '+(((f.charCodeAt(0)-97+r)%2)?'light':'dark');if(selected===s)d.classList.add('sel');if(marks[s])d.classList.add(marks[s]);d.dataset.s=s;d.textContent=U[map[s]]||'';d.draggable=!!map[s];d.onclick=()=>clickSquare(s);d.ondragstart=e=>{dragFrom=s};d.ondragover=e=>e.preventDefault();d.ondrop=e=>{e.preventDefault();attempt(dragFrom,s)};board.appendChild(d)}fenOut.textContent=makeFen(map)}
+function loadLesson(){let L=LESSONS[idx];map=parseFen(L.fen);selected=null;marks={};module.textContent=L.module;title.textContent=L.title;prompt.textContent='White to move. '+(L.id==='DNA-01'?'Find the course move.':'Choose the repertoire move.');status.className='status';status.textContent='Your move.';explain.textContent='';last.textContent='—';render()}
+function clickSquare(s){if(selected){let a=selected;selected=null;attempt(a,s)}else if(map[s] && map[s]===map[s].toUpperCase()){selected=s;render()}}
+function attempt(a,b){if(!a||!map[a])return;let L=LESSONS[idx];last.textContent=a+' → '+b;marks={};if(a===L.from&&b===L.to){map[b]=map[a];delete map[a];marks[b]='right';status.className='status ok';status.textContent='Correct: '+L.san+'. Explain why before reading the explanation.';explain.textContent=L.explain}else{marks[b]='wrong';status.className='status no';status.textContent='Not the course move for this exercise. Try again or ask for a hint.'}selected=null;render()}
+hint.onclick=()=>{explain.textContent='Hint: '+LESSONS[idx].hint};
+answer.onclick=()=>{let L=LESSONS[idx];marks={[L.from]:'right',[L.to]:'right'};explain.textContent='Answer: '+L.san+'. '+L.explain;render()};
+retry.onclick=loadLesson;next.onclick=()=>{idx=(idx+1)%LESSONS.length;loadLesson()};flip.onclick=()=>{flipped=!flipped;render()};
+lesson=undefined;
+loadFen.onclick=()=>{try{map=parseFen(fenIn.value.trim());selected=null;marks={};module.textContent='Custom position';title.textContent='FEN Board';prompt.textContent='Position loaded. Use this board for analysis.';status.textContent='Board ready.';explain.textContent='';render()}catch(e){status.textContent='Could not load that FEN.'}};
+start.onclick=()=>{map=parseFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');module.textContent='Free board';title.textContent='Starting Position';prompt.textContent='Use the board freely.';status.textContent='Board ready.';render()};
+function loadFromUrl(){
+ const q=new URLSearchParams(location.search); if(!q.has('fen')) return false;
+ const L={id:q.get('lesson')||'COACH',module:q.get('module')||'Jobava London Coach',title:q.get('title')||'Coach Position',fen:q.get('fen'),from:q.get('from')||'',to:q.get('to')||'',san:q.get('san')||'',hint:q.get('hint')||'Think about the course plan before moving.',explain:q.get('explain')||'Return to your Jobava Coach and explain your reasoning.'};
+ LESSONS.push(L); idx=LESSONS.length-1; flipped=q.get('orientation')==='black';
+ map=parseFen(L.fen); selected=null; marks={}; module.textContent=L.module; title.textContent=L.title; prompt.textContent=q.get('prompt')||'Find the best Jobava repertoire move.'; status.className='status'; status.textContent='Your move.'; explain.textContent=''; last.textContent='—'; render(); return true;
+}
+if(!loadFromUrl()) loadLesson();
+</script></body></html>
