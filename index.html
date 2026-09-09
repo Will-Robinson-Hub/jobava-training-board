@@ -10,7 +10,7 @@ button,select,input{font:inherit;padding:9px;border:1px solid #bbb;border-radius
 .status{font-weight:700;font-size:1.05rem}.ok{color:#16733a}.no{color:#a01d1d}.hidden{display:none}code{word-break:break-all;font-size:.82rem}
 .badge{display:inline-block;padding:3px 8px;border-radius:20px;background:#eee;font-size:.8rem}.lessonTitle{font-size:1.25rem;font-weight:750}
 @media(max-width:820px){.layout{grid-template-columns:1fr}#board{width:min(100%,calc(100vh - 150px));max-width:600px}.app{padding:10px}.sq{font-size:clamp(26px,min(10vw,9vh),60px)}}
-</style></head><body><div class="app"><header><h1>♟ Jobava London Training Board</h1><p class="muted">v2.2 — Coach-linked lesson, repertoire, and quiz board</p></header>
+</style></head><body><div class="app"><header><h1>♟ Jobava London Training Board</h1><p class="muted">v2.3 — Two-way Coach session API integration</p></header>
 <div class="layout"><section><div id="board"></div><p class="muted">Drag a piece or click the piece and then its destination.</p></section>
 <aside>
 <div class="card"><span class="badge" id="module"></span><div class="lessonTitle" id="title"></div><p id="prompt"></p><p class="status" id="status">Your move.</p>
@@ -29,6 +29,8 @@ const LESSONS=[
 {id:'MOVE-08',module:'Phase 3 · Move Orders',title:'2...Nc6 — Don’t Autopilot',fen:'r1bqkbnr/ppp1pppp/2n5/3p4/3P4/2N5/PPP1PPPP/R1BQKBNR w KQkq - 0 3',from:'e2',to:'e4',san:'e4',hint:'Nc3 supports a central pawn advance. Use it.',explain:'3.e4 is the course move. This is a key example of Jobava thinking: respond to the move order rather than automatically playing Bf4.'}
 ];
 let idx=0,map={},selected=null,flipped=false,dragFrom=null,marks={};
+const API_BASE='https://jobava-coach-api.kingdomcome2021.workers.dev';
+let sessionId=null,sessionMode=false,sessionData=null;
 const files='abcdefgh';
 function parseFen(f){let m={},rows=f.split(' ')[0].split('/');rows.forEach((row,ri)=>{let fi=0;for(const c of row){if(/[1-8]/.test(c))fi+=+c;else{m[files[fi]+(8-ri)]=c;fi++}}});return m}
 function makeFen(m,turn='w'){let rows=[];for(let r=8;r>=1;r--){let row='',empty=0;for(const f of files){let p=m[f+r];if(p){if(empty){row+=empty;empty=0}row+=p}else empty++}if(empty)row+=empty;rows.push(row)}return rows.join('/')+' '+turn+' - - 0 1'}
@@ -36,18 +38,81 @@ function squaresBetween(){return []}
 function render(){board.innerHTML='';let fs=flipped?'hgfedcba':'abcdefgh',rs=flipped?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];for(const r of rs)for(const f of fs){let s=f+r,d=document.createElement('div');d.className='sq '+(((f.charCodeAt(0)-97+r)%2)?'light':'dark');if(selected===s)d.classList.add('sel');if(marks[s])d.classList.add(marks[s]);d.dataset.s=s;d.textContent=U[map[s]]||'';d.draggable=!!map[s];d.onclick=()=>clickSquare(s);d.ondragstart=e=>{dragFrom=s};d.ondragover=e=>e.preventDefault();d.ondrop=e=>{e.preventDefault();attempt(dragFrom,s)};board.appendChild(d)}fenOut.textContent=makeFen(map)}
 function loadLesson(){let L=LESSONS[idx];map=parseFen(L.fen);selected=null;marks={};module.textContent=L.module;title.textContent=L.title;prompt.textContent='White to move. '+(L.id==='DNA-01'?'Find the course move.':'Choose the repertoire move.');status.className='status';status.textContent='Your move.';explain.textContent='';last.textContent='—';render()}
 function clickSquare(s){if(selected){let a=selected;selected=null;attempt(a,s)}else if(map[s] && map[s]===map[s].toUpperCase()){selected=s;render()}}
-function attempt(a,b){if(!a||!map[a])return;let L=LESSONS[idx];last.textContent=a+' → '+b;marks={};if(a===L.from&&b===L.to){map[b]=map[a];delete map[a];marks[b]='right';status.className='status ok';status.textContent='Correct: '+L.san+'. Explain why before reading the explanation.';explain.textContent=L.explain}else{marks[b]='wrong';status.className='status no';status.textContent='Not the course move for this exercise. Try again or ask for a hint.'}selected=null;render()}
-hint.onclick=()=>{explain.textContent='Hint: '+LESSONS[idx].hint};
-answer.onclick=()=>{let L=LESSONS[idx];marks={[L.from]:'right',[L.to]:'right'};explain.textContent='Answer: '+L.san+'. '+L.explain;render()};
-retry.onclick=loadLesson;next.onclick=()=>{idx=(idx+1)%LESSONS.length;loadLesson()};flip.onclick=()=>{flipped=!flipped;render()};
+async function attempt(a,b){
+ if(!a||!map[a])return;
+ last.textContent=a+' → '+b;
+ marks={};
+ if(sessionMode){
+   status.className='status'; status.textContent='Submitting move to Jobava Coach…';
+   try{
+     const res=await fetch(API_BASE+'/sessions/'+encodeURIComponent(sessionId)+'/move',{
+       method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({from:a,to:b,fen_after:makeFen({...map,[b]:map[a]},'b')})
+     });
+     const data=await res.json();
+     if(!res.ok) throw new Error(data.error||'Move submission failed');
+     if(data.correct){
+       map[b]=map[a]; delete map[a]; marks[b]='right';
+       status.className='status ok'; status.textContent='Correct. Your move was recorded for the Jobava Coach.';
+       explain.textContent=data.explanation||'Return to your Jobava Coach and explain why you chose the move.';
+     }else{
+       marks[b]='wrong'; status.className='status no';
+       status.textContent='That is not the course move. Your attempt was recorded. Try again or use a hint.';
+       explain.textContent='';
+     }
+   }catch(e){
+     marks[b]='wrong'; status.className='status no';
+     status.textContent='Could not send the move to the Coach API.';
+     explain.textContent=e.message;
+   }
+   selected=null; render(); return;
+ }
+ let L=LESSONS[idx];
+ if(a===L.from&&b===L.to){
+   map[b]=map[a];delete map[a];marks[b]='right';status.className='status ok';
+   status.textContent='Correct: '+L.san+'. Explain why before reading the explanation.';explain.textContent=L.explain
+ }else{
+   marks[b]='wrong';status.className='status no';
+   status.textContent='Not the course move for this exercise. Try again or ask for a hint.'
+ }
+ selected=null;render()
+}
+hint.onclick=()=>{explain.textContent='Hint: '+(sessionMode?(sessionData?.hint||'Think about the course plan before moving.'):LESSONS[idx].hint)};
+answer.onclick=()=>{if(sessionMode){explain.textContent='The answer is hidden in Coach session mode. Make an attempt first, or return to your Jobava Coach.';return;}let L=LESSONS[idx];marks={[L.from]:'right',[L.to]:'right'};explain.textContent='Answer: '+L.san+'. '+L.explain;render()};
+retry.onclick=()=>{if(sessionMode){loadSession(sessionId)}else loadLesson()};next.onclick=()=>{idx=(idx+1)%LESSONS.length;loadLesson()};flip.onclick=()=>{flipped=!flipped;render()};
 lesson=undefined;
 loadFen.onclick=()=>{try{map=parseFen(fenIn.value.trim());selected=null;marks={};module.textContent='Custom position';title.textContent='FEN Board';prompt.textContent='Position loaded. Use this board for analysis.';status.textContent='Board ready.';explain.textContent='';render()}catch(e){status.textContent='Could not load that FEN.'}};
 start.onclick=()=>{map=parseFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');module.textContent='Free board';title.textContent='Starting Position';prompt.textContent='Use the board freely.';status.textContent='Board ready.';render()};
+async function loadSession(id){
+ sessionId=id; sessionMode=true;
+ status.className='status'; status.textContent='Loading Coach session…';
+ try{
+   const res=await fetch(API_BASE+'/sessions/'+encodeURIComponent(id));
+   const s=await res.json();
+   if(!res.ok) throw new Error(s.error||'Session not found');
+   sessionData=s; map=parseFen(s.fen); selected=null; marks={};
+   flipped=s.orientation==='black';
+   module.textContent=s.module||'Jobava London Coach';
+   title.textContent=s.title||'Coach Position';
+   prompt.textContent=s.prompt||'Find the course move.';
+   status.className='status'; status.textContent=s.status==='waiting_for_move'?'Your move.':'Session status: '+s.status;
+   explain.textContent=''; last.textContent=s.move?(s.move.from+' → '+s.move.to):'—';
+   render();
+ }catch(e){
+   module.textContent='Jobava London Coach'; title.textContent='Session unavailable';
+   prompt.textContent='The board could not load this training session.';
+   status.className='status no'; status.textContent='Could not load Coach session.';
+   explain.textContent=e.message;
+ }
+}
 function loadFromUrl(){
+ sessionMode=false; sessionId=null; sessionData=null;
  const q=new URLSearchParams(location.search); if(!q.has('fen')) return false;
  const L={id:q.get('lesson')||'COACH',module:q.get('module')||'Jobava London Coach',title:q.get('title')||'Coach Position',fen:q.get('fen'),from:q.get('from')||'',to:q.get('to')||'',san:q.get('san')||'',hint:q.get('hint')||'Think about the course plan before moving.',explain:q.get('explain')||'Return to your Jobava Coach and explain your reasoning.'};
  LESSONS.push(L); idx=LESSONS.length-1; flipped=q.get('orientation')==='black';
  map=parseFen(L.fen); selected=null; marks={}; module.textContent=L.module; title.textContent=L.title; prompt.textContent=q.get('prompt')||'Find the best Jobava repertoire move.'; status.className='status'; status.textContent='Your move.'; explain.textContent=''; last.textContent='—'; render(); return true;
 }
-if(!loadFromUrl()) loadLesson();
+const bootQ=new URLSearchParams(location.search);
+if(bootQ.has('session')) loadSession(bootQ.get('session'));
+else if(!loadFromUrl()) loadLesson();
 </script></body></html>
