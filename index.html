@@ -11,7 +11,7 @@ button,select,input{font:inherit;padding:9px;border:1px solid #bbb;border-radius
 .badge{display:inline-block;padding:3px 8px;border-radius:20px;background:#eee;font-size:.8rem}.lessonTitle{font-size:1.25rem;font-weight:750}
 .coord{position:absolute;left:3px;top:3px;font-size:clamp(8px,1.35vw,12px);font-weight:800;line-height:1;pointer-events:none;z-index:3;opacity:.72}.light .coord{color:#4d4d4d}.dark .coord{color:#f3f3f3}.piece{position:relative;z-index:2}.selectedReadout{font-weight:650}
 @media(max-width:820px){.layout{grid-template-columns:1fr}#board{width:min(100%,calc(100vh - 150px));max-width:600px}.app{padding:10px}.sq{font-size:clamp(26px,min(10vw,9vh),60px)}}
-</style></head><body><div class="app"><header><h1>♟ Jobava London Training Board</h1><p class="muted">v2.4 — Natural move attempts + coordinate training</p></header>
+</style></head><body><div class="app"><header><h1>♟ Jobava London Training Board</h1><p class="muted">v2.5 — Full chess-rule validation + one-attempt training</p></header>
 <div class="layout"><section><div id="board"></div><p class="muted">Drag a piece or click the piece and then its destination. Every square is labeled a1–h8 to help you learn chess coordinates.</p><p class="selectedReadout">Selected: <span id="selectedOut">—</span></p></section>
 <aside>
 <div class="card"><span class="badge" id="module"></span><div class="lessonTitle" id="title"></div><p id="prompt"></p><p class="status" id="status">Your move.</p>
@@ -32,86 +32,91 @@ const LESSONS=[
 let idx=0,map={},selected=null,flipped=false,dragFrom=null,marks={};
 const API_BASE='https://jobava-coach-api.kingdomcome2021.workers.dev';
 let sessionId=null,sessionMode=false,sessionData=null;
+let attemptLocked=false, freeBoardMode=false;
 const files='abcdefgh';
-function parseFen(f){let m={},rows=f.split(' ')[0].split('/');rows.forEach((row,ri)=>{let fi=0;for(const c of row){if(/[1-8]/.test(c))fi+=+c;else{m[files[fi]+(8-ri)]=c;fi++}}});return m}
-function makeFen(m,turn='w'){let rows=[];for(let r=8;r>=1;r--){let row='',empty=0;for(const f of files){let p=m[f+r];if(p){if(empty){row+=empty;empty=0}row+=p}else empty++}if(empty)row+=empty;rows.push(row)}return rows.join('/')+' '+turn+' - - 0 1'}
-function squaresBetween(){return []}
-function render(){board.innerHTML='';let fs=flipped?'hgfedcba':'abcdefgh',rs=flipped?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];for(const r of rs)for(const f of fs){let s=f+r,d=document.createElement('div');d.className='sq '+(((f.charCodeAt(0)-97+r)%2)?'light':'dark');if(selected===s)d.classList.add('sel');if(marks[s])d.classList.add(marks[s]);d.dataset.s=s;let piece=document.createElement('span');piece.className='piece';piece.textContent=U[map[s]]||'';d.appendChild(piece);let c=document.createElement('span');c.className='coord';c.textContent=s;d.appendChild(c);d.draggable=!!map[s];d.onclick=()=>clickSquare(s);d.ondragstart=e=>{dragFrom=s};d.ondragover=e=>e.preventDefault();d.ondrop=e=>{e.preventDefault();attempt(dragFrom,s)};board.appendChild(d)}fenOut.textContent=makeFen(map);selectedOut.textContent=selected?(pieceName(map[selected])+' '+selected):'—'}
+let game={map:{},turn:'w',castling:'-',ep:'-',half:0,full:1};
+function color(p){return !p?null:(p===p.toUpperCase()?'w':'b')}
 function pieceName(p){return ({P:'Pawn',N:'Knight',B:'Bishop',R:'Rook',Q:'Queen',K:'King',p:'Pawn',n:'Knight',b:'Bishop',r:'Rook',q:'Queen',k:'King'})[p]||'Piece'}
-function loadLesson(){let L=LESSONS[idx];map=parseFen(L.fen);selected=null;marks={};module.textContent=L.module;title.textContent=L.title;prompt.textContent='White to move. '+(L.id==='DNA-01'?'Find the course move.':'Choose the repertoire move.');status.className='status';status.textContent='Your move.';explain.textContent='';last.textContent='—';render()}
-function clickSquare(s){if(selected){let a=selected;selected=null;attempt(a,s)}else if(map[s] && map[s]===map[s].toUpperCase()){selected=s;render()}}
-async function attempt(a,b){
- if(!a||!map[a])return;
- last.textContent=a+' → '+b;
- marks={};
- if(sessionMode){
-   status.className='status'; status.textContent='Submitting move to Jobava Coach…';
-   try{
-     const res=await fetch(API_BASE+'/sessions/'+encodeURIComponent(sessionId)+'/move',{
-       method:'POST',headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({from:a,to:b,fen_after:makeFen({...map,[b]:map[a]},'b')})
-     });
-     const data=await res.json();
-     if(!res.ok) throw new Error(data.error||'Move submission failed');
-     map[b]=map[a]; delete map[a];
-     if(data.correct){
-       marks[b]='right';
-       status.className='status ok'; status.textContent='Move submitted. Return to the Jobava Coach for evaluation.';
-       explain.textContent=data.explanation||'Explain why you chose the move before asking for the answer.';
-     }else{
-       marks[b]=''; status.className='status';
-       status.textContent='Move submitted. Return to the Jobava Coach for evaluation.';
-       explain.textContent='Your move stays on the board so the board does not reveal whether it is the course move.';
-     }
-   }catch(e){
-     marks[b]='wrong'; status.className='status no';
-     status.textContent='Could not send the move to the Coach API.';
-     explain.textContent=e.message;
-   }
-   selected=null; render(); return;
+function parseFen(f){
+ const parts=f.trim().split(/\s+/); if(parts.length<1)throw Error('Invalid FEN');
+ let m={},rows=parts[0].split('/'); if(rows.length!==8)throw Error('Invalid FEN board');
+ rows.forEach((row,ri)=>{let fi=0;for(const c of row){if(/[1-8]/.test(c))fi+=+c;else{if(!/[prnbqkPRNBQK]/.test(c)||fi>7)throw Error('Invalid FEN piece');m[files[fi]+(8-ri)]=c;fi++}}if(fi!==8)throw Error('Invalid FEN row')});
+ return {map:m,turn:parts[1]||'w',castling:parts[2]||'-',ep:parts[3]||'-',half:+parts[4]||0,full:+parts[5]||1};
+}
+function makeFen(g=game){let rows=[];for(let r=8;r>=1;r--){let row='',empty=0;for(const f of files){let p=g.map[f+r];if(p){if(empty){row+=empty;empty=0}row+=p}else empty++}if(empty)row+=empty;rows.push(row)}return `${rows.join('/')} ${g.turn} ${g.castling||'-'} ${g.ep||'-'} ${g.half} ${g.full}`}
+function syncMap(){map=game.map}
+function xy(s){return [files.indexOf(s[0]),+s[1]-1]}
+function sq(x,y){return x>=0&&x<8&&y>=0&&y<8?files[x]+(y+1):null}
+function enemy(c){return c==='w'?'b':'w'}
+function cloneGame(g){return {map:{...g.map},turn:g.turn,castling:g.castling,ep:g.ep,half:g.half,full:g.full}}
+function kingSquare(g,c){let k=c==='w'?'K':'k';return Object.keys(g.map).find(s=>g.map[s]===k)||null}
+function isAttacked(g,target,by){
+ const [tx,ty]=xy(target);
+ // pawns
+ const py=by==='w'?ty-1:ty+1; for(const dx of [-1,1]){let s=sq(tx+dx,py);if(s&&g.map[s]===(by==='w'?'P':'p'))return true}
+ // knights
+ for(const [dx,dy] of [[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]]){let s=sq(tx+dx,ty+dy),p=s&&g.map[s];if(p&&color(p)===by&&p.toLowerCase()==='n')return true}
+ // king
+ for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)if(dx||dy){let s=sq(tx+dx,ty+dy),p=s&&g.map[s];if(p&&color(p)===by&&p.toLowerCase()==='k')return true}
+ for(const [dx,dy,types] of [[1,0,'rq'],[-1,0,'rq'],[0,1,'rq'],[0,-1,'rq'],[1,1,'bq'],[1,-1,'bq'],[-1,1,'bq'],[-1,-1,'bq']]){let x=tx+dx,y=ty+dy;while(sq(x,y)){let p=g.map[sq(x,y)];if(p){if(color(p)===by&&types.includes(p.toLowerCase()))return true;break}x+=dx;y+=dy}}
+ return false
+}
+function inCheck(g,c){let k=kingSquare(g,c);return k?isAttacked(g,k,enemy(c)):false}
+function pseudoMoves(g,from){
+ let p=g.map[from]; if(!p)return []; let c=color(p),t=p.toLowerCase(),[x,y]=xy(from),out=[];
+ const add=(to,extra={})=>{if(!to)return;let q=g.map[to];if(!q||color(q)!==c)out.push({from,to,piece:p,capture:q||null,...extra})};
+ if(t==='p'){
+  let dy=c==='w'?1:-1,start=c==='w'?1:6,promo=c==='w'?7:0; let one=sq(x,y+dy);
+  if(one&&!g.map[one]){add(one,{promotion:y+dy===promo});let two=sq(x,y+2*dy);if(y===start&&two&&!g.map[two])add(two,{doublePawn:true})}
+  for(const dx of [-1,1]){let to=sq(x+dx,y+dy);if(!to)continue;let q=g.map[to];if(q&&color(q)!==c)add(to,{promotion:y+dy===promo});else if(to===g.ep)add(to,{enPassant:true,capture:c==='w'?'p':'P'})}
+ } else if(t==='n') for(const d of [[1,2],[2,1],[2,-1],[1,-2],[-1,-2],[-2,-1],[-2,1],[-1,2]])add(sq(x+d[0],y+d[1]));
+ else if(t==='b'||t==='r'||t==='q'){
+  let dirs=[];if(t!=='r')dirs.push([1,1],[1,-1],[-1,1],[-1,-1]);if(t!=='b')dirs.push([1,0],[-1,0],[0,1],[0,-1]);
+  for(const [dx,dy] of dirs){let xx=x+dx,yy=y+dy;while(sq(xx,yy)){let to=sq(xx,yy),q=g.map[to];if(!q)add(to);else{if(color(q)!==c)add(to);break}xx+=dx;yy+=dy}}
+ } else if(t==='k'){
+  for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++)if(dx||dy)add(sq(x+dx,y+dy));
+  const rank=c==='w'?'1':'8',opp=enemy(c),K=c==='w'?'K':'k',R=c==='w'?'R':'r';
+  if(from==='e'+rank&&!inCheck(g,c)){
+   let kr=c==='w'?'K':'k'; if(g.castling.includes(kr)&&g.map['h'+rank]===R&&!g.map['f'+rank]&&!g.map['g'+rank]&&!isAttacked(g,'f'+rank,opp)&&!isAttacked(g,'g'+rank,opp))add('g'+rank,{castle:'K'});
+   let qr=c==='w'?'Q':'q'; if(g.castling.includes(qr)&&g.map['a'+rank]===R&&!g.map['b'+rank]&&!g.map['c'+rank]&&!g.map['d'+rank]&&!isAttacked(g,'d'+rank,opp)&&!isAttacked(g,'c'+rank,opp))add('c'+rank,{castle:'Q'});
+  }
  }
- let L=LESSONS[idx];
- map[b]=map[a];delete map[a];
- status.className='status';status.textContent='Move made: '+a+' → '+b+'. Decide why you chose it, then check with the Coach.';
- explain.textContent='The board will not reveal correctness automatically.'
- selected=null;render()
+ return out
+}
+function applyRaw(g,m,promotion='q'){
+ let n=cloneGame(g),p=n.map[m.from],c=color(p),captured=n.map[m.to]||null; delete n.map[m.from];
+ if(m.enPassant){let [x,y]=xy(m.to),cap=sq(x,y+(c==='w'?-1:1));captured=n.map[cap];delete n.map[cap]}
+ let placed=p;if(m.promotion)placed=c==='w'?promotion.toUpperCase():promotion.toLowerCase();n.map[m.to]=placed;
+ if(m.castle){let rank=c==='w'?'1':'8';if(m.castle==='K'){n.map['f'+rank]=n.map['h'+rank];delete n.map['h'+rank]}else{n.map['d'+rank]=n.map['a'+rank];delete n.map['a'+rank]}}
+ let rights=n.castling==='-'?'':n.castling;
+ if(p==='K')rights=rights.replace(/[KQ]/g,'');if(p==='k')rights=rights.replace(/[kq]/g,'');
+ const rookRights={a1:'Q',h1:'K',a8:'q',h8:'k'}; if(rookRights[m.from])rights=rights.replace(rookRights[m.from],'');if(rookRights[m.to]&&captured&&captured.toLowerCase()==='r')rights=rights.replace(rookRights[m.to],'');
+ n.castling=rights||'-';n.ep='-';if(p.toLowerCase()==='p'&&m.doublePawn){let [x,y]=xy(m.from);n.ep=sq(x,y+(c==='w'?1:-1))}
+ n.half=(p.toLowerCase()==='p'||captured)?0:g.half+1;n.full=g.full+(g.turn==='b'?1:0);n.turn=enemy(g.turn);return n
+}
+function legalMoves(g,from){let p=g.map[from];if(!p||color(p)!==g.turn)return [];return pseudoMoves(g,from).filter(m=>!inCheck(applyRaw(g,m,'q'),color(p)))}
+function allLegal(g,c=g.turn){let temp=cloneGame(g);temp.turn=c;let a=[];for(const s of Object.keys(temp.map))if(color(temp.map[s])===c)a.push(...legalMoves(temp,s));return a}
+function choosePromotion(c){let v=(prompt('Promote to: Q, R, B, or N','Q')||'Q').trim().toLowerCase();return ['q','r','b','n'].includes(v)?v:'q'}
+function sanFor(g,m,promotion){let p=g.map[m.from],t=p.toLowerCase(),capture=!!m.capture||m.enPassant,san='';if(m.castle)san=m.castle==='K'?'O-O':'O-O-O';else{
+ if(t!=='p'){san=t.toUpperCase();let others=allLegal(g).filter(x=>x.to===m.to&&x.from!==m.from&&g.map[x.from]&&g.map[x.from].toLowerCase()===t);if(others.length){let sameFile=others.some(x=>x.from[0]===m.from[0]),sameRank=others.some(x=>x.from[1]===m.from[1]);san+=!sameFile?m.from[0]:(!sameRank?m.from[1]:m.from)}}else if(capture)san+=m.from[0];san+=capture?'x':'';san+=m.to;if(m.promotion)san+='='+(promotion||'q').toUpperCase()}
+ let n=applyRaw(g,m,promotion);if(inCheck(n,n.turn))san+=allLegal(n).length?'#':'#'; // corrected below
+ if(inCheck(n,n.turn)&&allLegal(n).length)san=san.slice(0,-1)+'+';return san}
+function render(){board.innerHTML='';let fs=flipped?'hgfedcba':'abcdefgh',rs=flipped?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];for(const r of rs)for(const f of fs){let s=f+r,d=document.createElement('div');d.className='sq '+(((f.charCodeAt(0)-97+r)%2)?'light':'dark');if(selected===s)d.classList.add('sel');if(marks[s])d.classList.add(marks[s]);d.dataset.s=s;let piece=document.createElement('span');piece.className='piece';piece.textContent=U[game.map[s]]||'';d.appendChild(piece);let c=document.createElement('span');c.className='coord';c.textContent=s;d.appendChild(c);d.draggable=!!game.map[s]&&!attemptLocked&&color(game.map[s])===game.turn;d.onclick=()=>clickSquare(s);d.ondragstart=e=>{if(attemptLocked||!game.map[s]||color(game.map[s])!==game.turn){e.preventDefault();return}dragFrom=s};d.ondragover=e=>{if(!attemptLocked)e.preventDefault()};d.ondrop=e=>{e.preventDefault();if(!attemptLocked)attempt(dragFrom,s)};board.appendChild(d)}syncMap();fenOut.textContent=makeFen();selectedOut.textContent=selected?(pieceName(game.map[selected])+' '+selected):'—'}
+function setGame(fen){game=parseFen(fen);syncMap()}
+function loadLesson(){let L=LESSONS[idx];attemptLocked=false;freeBoardMode=false;setGame(L.fen);selected=null;marks={};module.textContent=L.module;title.textContent=L.title;prompt.textContent=(game.turn==='w'?'White':'Black')+' to move. '+(L.id==='DNA-01'?'Find the course move.':'Choose the repertoire move.');status.className='status';status.textContent='Your move.';explain.textContent='';last.textContent='—';render()}
+function clickSquare(s){if(attemptLocked){status.className='status';status.textContent='Move already submitted. Use Try again for a new attempt.';return}if(selected){if(s===selected){selected=null;render();return}if(game.map[s]&&color(game.map[s])===game.turn){selected=s;render();return}let a=selected;selected=null;attempt(a,s)}else if(game.map[s]&&color(game.map[s])===game.turn){selected=s;render()}else{status.className='status';status.textContent=(game.turn==='w'?'White':'Black')+' to move.'}}
+async function attempt(a,b){
+ if(!a||!game.map[a]||attemptLocked)return;let move=legalMoves(game,a).find(m=>m.to===b);if(!move){status.className='status no';status.textContent='Illegal chess move. Choose another move.';explain.textContent='The board checks chess legality only — not whether a legal move matches your Jobava repertoire.';selected=null;render();return}
+ let promotion=move.promotion?choosePromotion(color(game.map[a])):null;let san=sanFor(game,move,promotion),after=applyRaw(game,move,promotion),fenAfter=makeFen(after);last.textContent=san+'  ('+a+' → '+b+')';marks={};
+ if(sessionMode){status.className='status';status.textContent='Submitting legal move to Jobava Coach…';try{const res=await fetch(API_BASE+'/sessions/'+encodeURIComponent(sessionId)+'/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from:a,to:b,san:san,move_san:san,fen_after:fenAfter})});const data=await res.json();if(!res.ok)throw new Error(data.error||'Move submission failed');game=after;syncMap();attemptLocked=true;status.className='status';status.textContent='Move submitted. Return to the Jobava Coach for evaluation.';explain.textContent='The board confirmed only that the move is legal. It does not reveal whether it is the course move.'}catch(e){status.className='status no';status.textContent='Could not send the move to the Coach API.';explain.textContent=e.message}selected=null;render();return}
+ game=after;syncMap();if(!freeBoardMode)attemptLocked=true;status.className='status';status.textContent=freeBoardMode?('Legal move: '+san+'. '+(game.turn==='w'?'White':'Black')+' to move.'):('Move submitted. Return to the Jobava Coach for evaluation.');explain.textContent=freeBoardMode?(inCheck(game,game.turn)?'Check.':'Board ready.'):'The board confirmed only that the move is legal. It does not reveal correctness.';selected=null;render()
 }
 hint.onclick=()=>{explain.textContent='Hint: '+(sessionMode?(sessionData?.hint||'Think about the course plan before moving.'):LESSONS[idx].hint)};
 answer.onclick=()=>{if(sessionMode){explain.textContent='The answer is hidden in Coach session mode. Make an attempt first, or return to your Jobava Coach.';return;}let L=LESSONS[idx];marks={[L.from]:'right',[L.to]:'right'};explain.textContent='Answer: '+L.san+'. '+L.explain;render()};
-retry.onclick=()=>{if(sessionMode){loadSession(sessionId)}else loadLesson()};next.onclick=()=>{idx=(idx+1)%LESSONS.length;loadLesson()};flip.onclick=()=>{flipped=!flipped;render()};
-lesson=undefined;
-loadFen.onclick=()=>{try{map=parseFen(fenIn.value.trim());selected=null;marks={};module.textContent='Custom position';title.textContent='FEN Board';prompt.textContent='Position loaded. Use this board for analysis.';status.textContent='Board ready.';explain.textContent='';render()}catch(e){status.textContent='Could not load that FEN.'}};
-start.onclick=()=>{map=parseFen('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');module.textContent='Free board';title.textContent='Starting Position';prompt.textContent='Use the board freely.';status.textContent='Board ready.';render()};
-async function loadSession(id){
- sessionId=id; sessionMode=true;
- status.className='status'; status.textContent='Loading Coach session…';
- try{
-   const res=await fetch(API_BASE+'/sessions/'+encodeURIComponent(id));
-   const s=await res.json();
-   if(!res.ok) throw new Error(s.error||'Session not found');
-   sessionData=s; map=parseFen(s.fen); selected=null; marks={};
-   flipped=s.orientation==='black';
-   module.textContent=s.module||'Jobava London Coach';
-   title.textContent=s.title||'Coach Position';
-   prompt.textContent=s.prompt||'Find the course move.';
-   status.className='status'; status.textContent=s.status==='waiting_for_move'?'Your move.':'Session status: '+s.status;
-   explain.textContent=''; last.textContent=s.move?(s.move.from+' → '+s.move.to):'—';
-   render();
- }catch(e){
-   module.textContent='Jobava London Coach'; title.textContent='Session unavailable';
-   prompt.textContent='The board could not load this training session.';
-   status.className='status no'; status.textContent='Could not load Coach session.';
-   explain.textContent=e.message;
- }
-}
-function loadFromUrl(){
- sessionMode=false; sessionId=null; sessionData=null;
- const q=new URLSearchParams(location.search); if(!q.has('fen')) return false;
- const L={id:q.get('lesson')||'COACH',module:q.get('module')||'Jobava London Coach',title:q.get('title')||'Coach Position',fen:q.get('fen'),from:q.get('from')||'',to:q.get('to')||'',san:q.get('san')||'',hint:q.get('hint')||'Think about the course plan before moving.',explain:q.get('explain')||'Return to your Jobava Coach and explain your reasoning.'};
- LESSONS.push(L); idx=LESSONS.length-1; flipped=q.get('orientation')==='black';
- map=parseFen(L.fen); selected=null; marks={}; module.textContent=L.module; title.textContent=L.title; prompt.textContent=q.get('prompt')||'Find the best Jobava repertoire move.'; status.className='status'; status.textContent='Your move.'; explain.textContent=''; last.textContent='—'; render(); return true;
-}
-const bootQ=new URLSearchParams(location.search);
-if(bootQ.has('session')) loadSession(bootQ.get('session'));
-else if(!loadFromUrl()) loadLesson();
+retry.onclick=async()=>{if(sessionMode){status.className='status';status.textContent='Resetting attempt…';try{const r=await fetch(API_BASE+'/sessions/'+encodeURIComponent(sessionId)+'/reset',{method:'POST'});const d=await r.json();if(!r.ok)throw new Error(d.error||'Reset failed');await loadSession(sessionId)}catch(e){status.className='status no';status.textContent='Could not reset this attempt.';explain.textContent=e.message}}else loadLesson()};next.onclick=()=>{idx=(idx+1)%LESSONS.length;loadLesson()};flip.onclick=()=>{flipped=!flipped;render()};
+loadFen.onclick=()=>{try{attemptLocked=false;freeBoardMode=true;setGame(fenIn.value.trim());selected=null;marks={};module.textContent='Custom position';title.textContent='FEN Board';prompt.textContent='Position loaded with full chess-rule validation.';status.textContent=(game.turn==='w'?'White':'Black')+' to move.';explain.textContent='';last.textContent='—';render()}catch(e){status.className='status no';status.textContent='Could not load that FEN.';explain.textContent=e.message}};
+start.onclick=()=>{attemptLocked=false;freeBoardMode=true;setGame('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');module.textContent='Free board';title.textContent='Starting Position';prompt.textContent='Use the board freely with legal chess moves enforced.';status.textContent='White to move.';explain.textContent='';last.textContent='—';render()};
+async function loadSession(id){sessionId=id;sessionMode=true;freeBoardMode=false;status.className='status';status.textContent='Loading Coach session…';try{const res=await fetch(API_BASE+'/sessions/'+encodeURIComponent(id));const s=await res.json();if(!res.ok)throw new Error(s.error||'Session not found');sessionData=s;setGame(s.fen);selected=null;marks={};attemptLocked=s.status!=='waiting_for_move';flipped=s.orientation==='black';module.textContent=s.module||'Jobava London Coach';title.textContent=s.title||'Coach Position';prompt.textContent=s.prompt||'Find the course move.';status.className='status';status.textContent=s.status==='waiting_for_move'?'Your move.':'Session status: '+s.status;explain.textContent='';last.textContent=s.move?(s.move.san||s.move.move_san||((s.move.from||'')+' → '+(s.move.to||''))):'—';render()}catch(e){module.textContent='Jobava London Coach';title.textContent='Session unavailable';prompt.textContent='The board could not load this training session.';status.className='status no';status.textContent='Could not load Coach session.';explain.textContent=e.message}}
+function loadFromUrl(){sessionMode=false;sessionId=null;sessionData=null;attemptLocked=false;freeBoardMode=false;const q=new URLSearchParams(location.search);if(!q.has('fen'))return false;const L={id:q.get('lesson')||'COACH',module:q.get('module')||'Jobava London Coach',title:q.get('title')||'Coach Position',fen:q.get('fen'),from:q.get('from')||'',to:q.get('to')||'',san:q.get('san')||'',hint:q.get('hint')||'Think about the course plan before moving.',explain:q.get('explain')||'Return to your Jobava Coach and explain your reasoning.'};LESSONS.push(L);idx=LESSONS.length-1;flipped=q.get('orientation')==='black';setGame(L.fen);selected=null;marks={};module.textContent=L.module;title.textContent=L.title;prompt.textContent=q.get('prompt')||'Find the best Jobava repertoire move.';status.className='status';status.textContent='Your move.';explain.textContent='';last.textContent='—';render();return true}
+const bootQ=new URLSearchParams(location.search);if(bootQ.has('session'))loadSession(bootQ.get('session'));else if(!loadFromUrl())loadLesson();
 </script></body></html>
