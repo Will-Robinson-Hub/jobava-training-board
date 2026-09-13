@@ -9,9 +9,10 @@ header h1{margin:0}.muted{color:#60656f}.layout{display:grid;grid-template-colum
 button,select,input{font:inherit;padding:9px;border:1px solid #bbb;border-radius:7px;background:#fff}button{cursor:pointer}button:hover{background:#eee}select,input{width:100%}
 .status{font-weight:700;font-size:1.05rem}.ok{color:#16733a}.no{color:#a01d1d}.hidden{display:none}code{word-break:break-all;font-size:.82rem}
 .badge{display:inline-block;padding:3px 8px;border-radius:20px;background:#eee;font-size:.8rem}.lessonTitle{font-size:1.25rem;font-weight:750}
+.coord{position:absolute;left:3px;top:3px;font-size:clamp(8px,1.35vw,12px);font-weight:800;line-height:1;pointer-events:none;z-index:3;opacity:.72}.light .coord{color:#4d4d4d}.dark .coord{color:#f3f3f3}.piece{position:relative;z-index:2}.selectedReadout{font-weight:650}
 @media(max-width:820px){.layout{grid-template-columns:1fr}#board{width:min(100%,calc(100vh - 150px));max-width:600px}.app{padding:10px}.sq{font-size:clamp(26px,min(10vw,9vh),60px)}}
-</style></head><body><div class="app"><header><h1>♟ Jobava London Training Board</h1><p class="muted">v2.3 — Two-way Coach session API integration</p></header>
-<div class="layout"><section><div id="board"></div><p class="muted">Drag a piece or click the piece and then its destination.</p></section>
+</style></head><body><div class="app"><header><h1>♟ Jobava London Training Board</h1><p class="muted">v2.4 — Natural move attempts + coordinate training</p></header>
+<div class="layout"><section><div id="board"></div><p class="muted">Drag a piece or click the piece and then its destination. Every square is labeled a1–h8 to help you learn chess coordinates.</p><p class="selectedReadout">Selected: <span id="selectedOut">—</span></p></section>
 <aside>
 <div class="card"><span class="badge" id="module"></span><div class="lessonTitle" id="title"></div><p id="prompt"></p><p class="status" id="status">Your move.</p>
 <div class="controls"><button id="hint">Hint</button><button id="answer">Show answer</button><button id="retry">Try again</button><button id="next">Next position</button><button id="flip">Flip</button></div>
@@ -35,7 +36,8 @@ const files='abcdefgh';
 function parseFen(f){let m={},rows=f.split(' ')[0].split('/');rows.forEach((row,ri)=>{let fi=0;for(const c of row){if(/[1-8]/.test(c))fi+=+c;else{m[files[fi]+(8-ri)]=c;fi++}}});return m}
 function makeFen(m,turn='w'){let rows=[];for(let r=8;r>=1;r--){let row='',empty=0;for(const f of files){let p=m[f+r];if(p){if(empty){row+=empty;empty=0}row+=p}else empty++}if(empty)row+=empty;rows.push(row)}return rows.join('/')+' '+turn+' - - 0 1'}
 function squaresBetween(){return []}
-function render(){board.innerHTML='';let fs=flipped?'hgfedcba':'abcdefgh',rs=flipped?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];for(const r of rs)for(const f of fs){let s=f+r,d=document.createElement('div');d.className='sq '+(((f.charCodeAt(0)-97+r)%2)?'light':'dark');if(selected===s)d.classList.add('sel');if(marks[s])d.classList.add(marks[s]);d.dataset.s=s;d.textContent=U[map[s]]||'';d.draggable=!!map[s];d.onclick=()=>clickSquare(s);d.ondragstart=e=>{dragFrom=s};d.ondragover=e=>e.preventDefault();d.ondrop=e=>{e.preventDefault();attempt(dragFrom,s)};board.appendChild(d)}fenOut.textContent=makeFen(map)}
+function render(){board.innerHTML='';let fs=flipped?'hgfedcba':'abcdefgh',rs=flipped?[1,2,3,4,5,6,7,8]:[8,7,6,5,4,3,2,1];for(const r of rs)for(const f of fs){let s=f+r,d=document.createElement('div');d.className='sq '+(((f.charCodeAt(0)-97+r)%2)?'light':'dark');if(selected===s)d.classList.add('sel');if(marks[s])d.classList.add(marks[s]);d.dataset.s=s;let piece=document.createElement('span');piece.className='piece';piece.textContent=U[map[s]]||'';d.appendChild(piece);let c=document.createElement('span');c.className='coord';c.textContent=s;d.appendChild(c);d.draggable=!!map[s];d.onclick=()=>clickSquare(s);d.ondragstart=e=>{dragFrom=s};d.ondragover=e=>e.preventDefault();d.ondrop=e=>{e.preventDefault();attempt(dragFrom,s)};board.appendChild(d)}fenOut.textContent=makeFen(map);selectedOut.textContent=selected?(pieceName(map[selected])+' '+selected):'—'}
+function pieceName(p){return ({P:'Pawn',N:'Knight',B:'Bishop',R:'Rook',Q:'Queen',K:'King',p:'Pawn',n:'Knight',b:'Bishop',r:'Rook',q:'Queen',k:'King'})[p]||'Piece'}
 function loadLesson(){let L=LESSONS[idx];map=parseFen(L.fen);selected=null;marks={};module.textContent=L.module;title.textContent=L.title;prompt.textContent='White to move. '+(L.id==='DNA-01'?'Find the course move.':'Choose the repertoire move.');status.className='status';status.textContent='Your move.';explain.textContent='';last.textContent='—';render()}
 function clickSquare(s){if(selected){let a=selected;selected=null;attempt(a,s)}else if(map[s] && map[s]===map[s].toUpperCase()){selected=s;render()}}
 async function attempt(a,b){
@@ -51,14 +53,15 @@ async function attempt(a,b){
      });
      const data=await res.json();
      if(!res.ok) throw new Error(data.error||'Move submission failed');
+     map[b]=map[a]; delete map[a];
      if(data.correct){
-       map[b]=map[a]; delete map[a]; marks[b]='right';
-       status.className='status ok'; status.textContent='Correct. Your move was recorded for the Jobava Coach.';
-       explain.textContent=data.explanation||'Return to your Jobava Coach and explain why you chose the move.';
+       marks[b]='right';
+       status.className='status ok'; status.textContent='Move submitted. Return to the Jobava Coach for evaluation.';
+       explain.textContent=data.explanation||'Explain why you chose the move before asking for the answer.';
      }else{
-       marks[b]='wrong'; status.className='status no';
-       status.textContent='That is not the course move. Your attempt was recorded. Try again or use a hint.';
-       explain.textContent='';
+       marks[b]=''; status.className='status';
+       status.textContent='Move submitted. Return to the Jobava Coach for evaluation.';
+       explain.textContent='Your move stays on the board so the board does not reveal whether it is the course move.';
      }
    }catch(e){
      marks[b]='wrong'; status.className='status no';
@@ -68,13 +71,9 @@ async function attempt(a,b){
    selected=null; render(); return;
  }
  let L=LESSONS[idx];
- if(a===L.from&&b===L.to){
-   map[b]=map[a];delete map[a];marks[b]='right';status.className='status ok';
-   status.textContent='Correct: '+L.san+'. Explain why before reading the explanation.';explain.textContent=L.explain
- }else{
-   marks[b]='wrong';status.className='status no';
-   status.textContent='Not the course move for this exercise. Try again or ask for a hint.'
- }
+ map[b]=map[a];delete map[a];
+ status.className='status';status.textContent='Move made: '+a+' → '+b+'. Decide why you chose it, then check with the Coach.';
+ explain.textContent='The board will not reveal correctness automatically.'
  selected=null;render()
 }
 hint.onclick=()=>{explain.textContent='Hint: '+(sessionMode?(sessionData?.hint||'Think about the course plan before moving.'):LESSONS[idx].hint)};
